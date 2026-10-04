@@ -71,17 +71,22 @@ class Config:
 
     # ---------- Optional static front-end hosting ----------
     # The front-end normally runs as its own process (see the front-end README).
-    # When a copy of it is vendored into src/web, Flask also serves it from the
-    # same origin as the API, which is what the single-service cloud deployment
-    # uses. BASE_DIR already points at src/, hence "web" rather than "src/web".
-    # The sibling front-end project is only a fallback for local development.
+    # Two locations are checked, in this order:
+    #   1. the sibling front-end repository, which is what a developer has next
+    #      to this repository, so local edits are picked up immediately;
+    #   2. src/web, a copy vendored here by deploy/sync-frontend.ps1. A cloud
+    #      deployment only checks out this repository, so that copy (or the
+    #      CALC_FRONTEND_DIR variable, which takes precedence over both) is what
+    #      serves the pages there.
+    # BASE_DIR is the src/ directory, so the project root is BASE_DIR.parent and
+    # the vendored copy is BASE_DIR.parent / "src" / "web".
     _frontend_env = _env_str("CALC_FRONTEND_DIR", "")
     FRONTEND_DIR = (
         Path(_frontend_env)
         if _frontend_env
         else _first_existing_dir([
-            BASE_DIR / "web",
             BASE_DIR.parent / "832402226_calculator_frontend" / "src",
+            BASE_DIR.parent / "src" / "web",
         ])
     )
 
