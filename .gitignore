@@ -14,6 +14,11 @@ data/*.sqlite3
 # Temporary databases created by the test suite
 tests/.tmp/
 
+# NOTE: src/web holds a copy of the front-end, produced by
+# deploy/sync-frontend.ps1. It is intentionally NOT ignored: the single-service
+# cloud deployment needs it committed. Delete the folder for local back-end-only
+# work and re-run the script before deploying.
+
 # Local environment overrides
 .env
 

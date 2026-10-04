@@ -71,14 +71,16 @@ class Config:
 
     # ---------- Optional static front-end hosting ----------
     # The front-end normally runs as its own process (see the front-end README).
-    # When a copy of it is placed in src/web, Flask also serves it from the same
-    # origin as the API, which is convenient on hosts that expose a single port.
+    # When a copy of it is vendored into src/web, Flask also serves it from the
+    # same origin as the API, which is what the single-service cloud deployment
+    # uses. BASE_DIR already points at src/, hence "web" rather than "src/web".
+    # The sibling front-end project is only a fallback for local development.
     _frontend_env = _env_str("CALC_FRONTEND_DIR", "")
     FRONTEND_DIR = (
         Path(_frontend_env)
         if _frontend_env
         else _first_existing_dir([
-            BASE_DIR / "src" / "web",
+            BASE_DIR / "web",
             BASE_DIR.parent / "832402226_calculator_frontend" / "src",
         ])
     )

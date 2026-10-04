@@ -111,21 +111,34 @@ def _register_frontend_routes(app: Flask) -> None:
     """
     frontend_dir = app.config.get("FRONTEND_DIR")
 
-    if frontend_dir is None or not (frontend_dir / "index.html").is_file():
-        app.logger.info("No static front-end found, skipping static hosting: %s", frontend_dir)
+    if frontend_dir is None:
+        app.logger.info("No static front-end configured, skipping static hosting")
         return
 
-    app.logger.info("Static front-end hosting enabled: %s", frontend_dir)
+    # Accept either conventional entry file name.
+    entry_name = None
+    for candidate in ("index.html", "calculator.html"):
+        if (frontend_dir / candidate).is_file():
+            entry_name = candidate
+            break
+
+    if entry_name is None:
+        app.logger.info("No front-end entry page found, skipping static hosting: %s",
+                        frontend_dir)
+        return
+
+    app.logger.info("Static front-end hosting enabled: %s (entry %s)",
+                    frontend_dir, entry_name)
 
     @app.get("/index.html")
     def frontend_index():
         """Front-end entry page."""
-        return send_from_directory(frontend_dir, "index.html")
+        return send_from_directory(frontend_dir, entry_name)
 
     @app.get("/app")
     def frontend_index_alias():
         """A shorter alias for the entry page."""
-        return send_from_directory(frontend_dir, "index.html")
+        return send_from_directory(frontend_dir, entry_name)
 
     @app.get("/<path:filename>")
     def frontend_asset(filename: str):

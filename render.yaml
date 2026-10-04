@@ -1,0 +1,37 @@
+# Render Blueprint - free tier deployment for the 832402226 calculator.
+#
+# One web service serves both the JSON API and the H5 client, so the browser
+# never issues a cross origin request and a single URL is enough.
+#
+# The front-end is a zero-build static site: copy
+# 832402226_calculator_frontend/src into 后端/src/web before deploying
+# (see DEPLOYMENT.md), because Render's free plan allows one service.
+#
+# Environment variables:
+#   CALC_FRONTEND_DIR  directory that holds the static client (relative to the repo root)
+#   CALC_CORS_ORIGIN   "*" keeps LAN and phone testing working
+#   CALC_DEBUG         must stay "false" on a public deployment
+#   PYTHON_VERSION     a stable interpreter version compatible with Flask
+
+services:
+  - type: web
+    name: calculator-832402226
+    runtime: python
+    plan: free
+    region: singapore
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /api/health
+    buildCommand: |
+      cd 832402226_calculator_backend && pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: |
+      cd 832402226_calculator_backend && gunicorn run:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile -
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.6
+      - key: CALC_DEBUG
+        value: "false"
+      - key: CALC_CORS_ORIGIN
+        value: "*"
+      - key: CALC_FRONTEND_DIR
+        value: src/web
