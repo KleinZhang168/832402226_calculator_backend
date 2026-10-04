@@ -21,6 +21,7 @@ URL layout::
 """
 
 import datetime
+from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory, url_for
 from werkzeug.exceptions import MethodNotAllowed, NotFound
@@ -146,8 +147,17 @@ def _register_frontend_routes(app: Flask) -> None:
             break
 
     if entry_name is None:
-        app.logger.info("No front-end entry page found, skipping static hosting: %s",
-                        frontend_dir)
+        # Logged at warning level with the resolved paths, because this is the
+        # difference between a working page and a service that only answers JSON.
+        # A relative CALC_FRONTEND_DIR used to resolve against the working
+        # directory, which on Render sits one level above the checkout root, so
+        # the directory tested here did not exist and every page 404ed.
+        app.logger.warning(
+            "Static front-end hosting DISABLED: no index.html or calculator.html in %s "
+            "(cwd=%s, repository root=%s). Every page request will receive the JSON 404 "
+            "handler; check CALC_FRONTEND_DIR and the vendored src/web copy.",
+            frontend_dir, Path.cwd(), Path(app.root_path).resolve().parent,
+        )
         return
 
     app.logger.info("Static front-end hosting enabled: %s (entry %s)",

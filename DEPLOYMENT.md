@@ -119,6 +119,32 @@ commands above exactly; do not add the prefix back. The prefix is only correct
 when the service is created from a repository that *contains* this project as a
 subfolder, which is not how this repository is laid out.
 
+### Relative paths are anchored at the repository root, not at the working directory
+
+On Render the repository is checked out at `/opt/render/project/src`, but the
+build and start commands run with **`/opt/render/project`** as their working
+directory. A relative `CALC_FRONTEND_DIR` was previously taken literally, so
+`src/web` resolved to `/opt/render/project/src/web` - one level *above* the
+vendored copy. The directory did not exist, the application never registered its
+static routes, and every page request was answered by the JSON 404 handler:
+
+```json
+{"code":"NOT_FOUND","message":"No such endpoint: GET /index.html","success":false}
+```
+
+`src/config.py` now resolves a relative `CALC_FRONTEND_DIR` against the
+repository root, so the value works no matter which working directory the process
+was launched from, and `render.yaml` may keep using the readable `src/web`. If the
+page still 404s, the start-up log now says so explicitly:
+
+```
+Static front-end hosting DISABLED: no index.html or calculator.html in <dir>
+(cwd=..., repository root=...) ...
+```
+
+Search the Render logs for `Static front-end hosting` to see which directory was
+tried and whether hosting was enabled.
+
 Manual alternative: **New + → Web Service**, then copy the settings above into
 the form.
 
@@ -288,7 +314,8 @@ A message you can copy:
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `/index.html` returns 404 in the cloud | `src/web` was not committed, or the vendored copy has no `index.html`. Run `deploy\sync-frontend.ps1`, commit and push |
+| `/index.html` returns 404 in the cloud | Either `src/web` was not committed, or the vendored copy has no `index.html`, or `CALC_FRONTEND_DIR` resolves to the wrong directory. Run `deploy\sync-frontend.ps1`, commit and push; then check the start-up log line `Static front-end hosting` |
+| `/index.html` 404s while `/api/health` works | The static routes were never registered. Usually a `CALC_FRONTEND_DIR` that points one level above the checkout; a relative value is now anchored at the repository root, so `src/web` is correct |
 | The page loads but shows "Backend offline" | The instance is either still spinning up (a cold start takes about a minute) or `CALC_FRONTEND_DIR` does not point at `src/web`. Click the status chip to probe again |
 | The service fails to start | The start command must use `$PORT` (see `render.yaml`), not a hard-coded 5000 |
 | The build log says `cd: No such file or directory` | The build or start command was given a `cd` prefix again. This repository is checked out at the working directory root, so the prefix is wrong; see section 3 |

@@ -58,6 +58,25 @@ def _first_existing_dir(candidates):
     return options[0]
 
 
+def _resolve_dir(key: str, default: Path) -> Path:
+    """Read a directory setting from the environment, anchored at BASE_DIR.
+
+    A relative value is resolved against the repository root, not against the
+    process working directory. The distinction matters on a cloud host: on
+    Render the repository is checked out at ``/opt/render/project/src`` while the
+    build and start commands run with ``/opt/render/project`` as their working
+    directory. A bare ``src/web`` therefore resolved to
+    ``/opt/render/project/src/web``, one level above the vendored copy; the
+    static routes were never registered and every page answered with the JSON
+    404 handler instead of the calculator.
+    """
+    raw = _env_str(key, "")
+    if not raw:
+        return default
+    path = Path(raw)
+    return path if path.is_absolute() else (BASE_DIR / path)
+
+
 class Config:
     """Application configuration."""
 
@@ -77,16 +96,15 @@ class Config:
     #      repository, so this is the copy that serves the pages there;
     #   2. the sibling front-end repository, which is the layout a developer has
     #      locally when both repositories are checked out side by side.
-    # CALC_FRONTEND_DIR overrides both. BASE_DIR is the repository root, so the
-    # vendored copy is BASE_DIR / "src" / "web".
-    _frontend_env = _env_str("CALC_FRONTEND_DIR", "")
-    FRONTEND_DIR = (
-        Path(_frontend_env)
-        if _frontend_env
-        else _first_existing_dir([
+    # CALC_FRONTEND_DIR overrides both; a relative value is anchored at BASE_DIR,
+    # the repository root, so "src/web" means the same directory no matter which
+    # working directory the process was launched from.
+    FRONTEND_DIR = _resolve_dir(
+        "CALC_FRONTEND_DIR",
+        _first_existing_dir([
             BASE_DIR / "src" / "web",
             BASE_DIR.parent / "832402226_calculator_frontend" / "src",
-        ])
+        ]),
     )
 
     # ---------- Database ----------
