@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Runtime database: created automatically, never committed
+data/*.db
+data/*.db-journal
+data/*.sqlite3
+
+# Temporary databases created by the test suite
+tests/.tmp/
+
+# Local environment overrides
+.env
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

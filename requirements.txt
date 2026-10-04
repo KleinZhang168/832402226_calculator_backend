@@ -1,0 +1,14 @@
+# Dependencies of the 832402226 calculator backend.
+#
+# Expression parsing, evaluation and database access use only the Python
+# standard library (decimal / re / sqlite3 / datetime / unittest), so the only
+# third party package required to run this project is Flask.
+#
+# Install:
+#     python -m pip install -r requirements.txt
+#
+# gunicorn is used only when deploying to a Linux cloud host. The environment
+# marker keeps pip from trying to install it on Windows, where it cannot run.
+
+Flask>=2.2.0,<4.0.0
+gunicorn>=21.2.0; sys_platform != "win32"
