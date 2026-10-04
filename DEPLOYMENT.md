@@ -18,10 +18,12 @@ provides a single web service. The front-end is a zero-build static site, so the
 cheapest arrangement is:
 
 ```
-https://<service-name>.onrender.com/            the JSON endpoint list (a smoke test)
-https://<service-name>.onrender.com/index.html  forwards to the H5 client
-https://<service-name>.onrender.com/calculator.html  the H5 client itself, served by Flask
-https://<service-name>.onrender.com/api/...      the JSON API
+https://<service-name>.onrender.com/                  the calculator (this is the URL to share)
+https://<service-name>.onrender.com/index.html       the same entry page
+https://<service-name>.onrender.com/app              the same entry page, shorter alias
+https://<service-name>.onrender.com/calculator.html  the client itself, served by Flask
+https://<service-name>.onrender.com/api/endpoints    the JSON endpoint list
+https://<service-name>.onrender.com/api/...          the JSON API
 ```
 
 The front-end stays an independent repository with its own history; only a
@@ -54,21 +56,25 @@ git push
 
 ### Why an index.html is generated
 
-The client's own entry point is `calculator.html`. The application serves the
-page at `/index.html` (and at the short alias `/app`) and enables its static
-routes whenever the front-end directory holds an `index.html` **or** a
-`calculator.html`. The generated `index.html` is a JavaScript-free redirect to
-`./calculator.html`, so all three URLs reach the calculator:
+The client's own entry point is `calculator.html`. The application enables its
+static routes whenever the front-end directory holds an `index.html` **or** a
+`calculator.html`, so the generated file is not strictly required for hosting to
+work - but it decides what the **root path** serves, and the root path is the URL
+handed to a reviewer. With the entry page present:
 
 | URL | What answers it |
 | --- | --- |
-| `https://<service>.onrender.com/index.html` | the redirect page |
-| `https://<service>.onrender.com/app` | the redirect page |
+| `https://<service>.onrender.com/` | the calculator (via the entry page) |
+| `https://<service>.onrender.com/index.html` | the entry page |
+| `https://<service>.onrender.com/app` | the same entry page |
 | `https://<service>.onrender.com/calculator.html` | the calculator itself |
+| `https://<service>.onrender.com/api/endpoints` | the JSON endpoint list |
 
-The bare root `/` is reserved for the JSON endpoint list, which is the quickest
-way to confirm in a browser that the service is up. Never edit
-`src/web/index.html` by hand: the next sync overwrites it. Edit the template
+The generated `index.html` is a JavaScript-free redirect to `./calculator.html`.
+Without it the root path falls back to the JSON endpoint list, which made a
+correctly deployed service look broken to anyone who opened it in a browser. The
+endpoint list keeps its own home at `/api/endpoints`, so nothing is lost. Never
+edit `src/web/index.html` by hand: the next sync overwrites it. Edit the template
 inside `deploy/sync-frontend.ps1` instead.
 
 ---
@@ -193,9 +199,9 @@ Two ways to keep the history, should the assignment require it:
 | Check | Expected |
 | --- | --- |
 | `GET https://<service>.onrender.com/api/health` | `"success": true` with `"database": "ok"` (a cold start takes about a minute) |
-| `GET https://<service>.onrender.com/` | The endpoint list as JSON |
-| `GET https://<service>.onrender.com/index.html` | Forwards to the calculator, status chip green |
-| `GET https://<service>.onrender.com/app` | The same redirect |
+| `GET https://<service>.onrender.com/` | The calculator page, status chip green |
+| `GET https://<service>.onrender.com/api/endpoints` | The endpoint list as JSON |
+| `GET https://<service>.onrender.com/calculator.html` | The client itself |
 | Press `2`, long press `×`, press `3`, press `=` | The result `8` and "Saved to history" |
 | Open the history view | The record is listed and can be deleted |
 
@@ -278,9 +284,10 @@ A message you can copy:
 > server, a plain H5 page on the client (no build step).
 >
 > Quick look, nothing to install:
-> `https://<service-name>.onrender.com/index.html`
+> `https://<service-name>.onrender.com/`
 > The free instance sleeps after 15 idle minutes, so the first load can take
-> 30-60 seconds. If the chip says "Backend offline", click it to probe again.
+> about a minute. If the chip says "Backend offline", click it to probe again.
+> The JSON endpoint list lives at `/api/endpoints`.
 >
 > Suggested tour (about a minute):
 > 1. Check that the chip is green ("Backend online").
@@ -314,8 +321,8 @@ A message you can copy:
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `/index.html` returns 404 in the cloud | Either `src/web` was not committed, or the vendored copy has no `index.html`, or `CALC_FRONTEND_DIR` resolves to the wrong directory. Run `deploy\sync-frontend.ps1`, commit and push; then check the start-up log line `Static front-end hosting` |
-| `/index.html` 404s while `/api/health` works | The static routes were never registered. Usually a `CALC_FRONTEND_DIR` that points one level above the checkout; a relative value is now anchored at the repository root, so `src/web` is correct |
+| The root path shows the JSON endpoint list instead of the calculator | `src/web` was not committed, or the vendored copy has no `index.html`, or `CALC_FRONTEND_DIR` resolves to the wrong directory. Run `deploy\sync-frontend.ps1`, commit and push; then check the start-up log line `Static front-end hosting` |
+| Pages 404 while `/api/health` works | The static routes were never registered. Usually a `CALC_FRONTEND_DIR` that points one level above the checkout; a relative value is now anchored at the repository root, so `src/web` is correct |
 | The page loads but shows "Backend offline" | The instance is either still spinning up (a cold start takes about a minute) or `CALC_FRONTEND_DIR` does not point at `src/web`. Click the status chip to probe again |
 | The service fails to start | The start command must use `$PORT` (see `render.yaml`), not a hard-coded 5000 |
 | The build log says `cd: No such file or directory` | The build or start command was given a `cd` prefix again. This repository is checked out at the working directory root, so the prefix is wrong; see section 3 |

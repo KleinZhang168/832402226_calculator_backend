@@ -102,7 +102,22 @@ class TestHealthApi(CalculatorApiTestCase):
         self.assertEqual(payload["database"], "ok")
         self.assertEqual(payload["historyCount"], 0)
 
-    def test_index_lists_endpoints(self):
+    def test_endpoints_lists_every_route(self):
+        """The endpoint list always answers at /api/endpoints."""
+        response = self.client.get("/api/endpoints")
+        self.assertEqual(response.status_code, 200)
+        payload = self.body(response)
+        self.assertTrue(payload["success"])
+        self.assertTrue(any("/api/calculate" in item for item in payload["endpoints"]))
+
+    def test_index_falls_back_to_endpoint_list(self):
+        """Without a bundled front-end the root path returns the endpoint list.
+
+        The test suite builds the app without a static front-end, so this covers
+        the back-end-only deployment. When src/web is present the same route
+        serves the calculator page instead, which is what the cloud deployment
+        does and what puts the page on the URL people are given.
+        """
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         payload = self.body(response)
@@ -322,6 +337,98 @@ class TestErrorResponses(CalculatorApiTestCase):
     def test_cors_headers_present(self):
         response = self.client.get("/api/health")
         self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "*")
+
+
+class TestRootServesFrontend(unittest.TestCase):
+    """The root path must serve the page when a front-end copy is bundled.
+
+    This is the deployment contract: the URL handed to a reviewer is the bare
+    origin, so "/" has to answer with the calculator rather than a JSON payload.
+    An earlier revision returned the endpoint list there, which made a correctly
+    deployed service look broken to anyone who opened it in a browser.
+
+    The front-end directory comes from FORCE_FRONTEND_DIR when the caller sets
+    it, otherwise from the vendored src/web copy. The class skips itself when
+    neither exists, so the suite still passes in a back-end-only checkout.
+    """
+
+    frontend_dir = None
+
+    def setUp(self):
+        override = os.environ.get("FORCE_FRONTEND_DIR", "").strip()
+        candidate = Path(override) if override else (PROJECT_ROOT / "src" / "web")
+        if not candidate.is_dir():
+            self.skipTest("no front-end copy to serve: %s" % candidate)
+        self.frontend_dir = candidate
+
+        temp_dir = make_temp_dir()
+        self.addCleanup(shutil.rmtree, temp_dir, ignore_errors=True)
+
+        class FrontendConfig(Config):
+            TESTING = True
+            DEBUG = False
+            DATABASE_PATH = str(Path(temp_dir) / "frontend_root.db")
+            CORS_ALLOW_ORIGIN = "*"
+            FRONTEND_DIR = candidate
+
+        self.app = create_app(FrontendConfig)
+        self.client = self.app.test_client()
+
+    def test_root_serves_the_page(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers.get("Content-Type", ""))
+        self.assertNotIn(b'"endpoints"', response.data)
+
+    def test_entry_page_and_assets_are_served(self):
+        for path in ("/index.html", "/calculator.html", "/app"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("text/html", response.headers.get("Content-Type", ""))
+
+        for path in ("/css/tokens.css", "/js/app.js", "/static/bg.png"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(path).status_code, 200)
+
+    def test_endpoint_list_still_reachable(self):
+        """The list moved to /api/endpoints but must not disappear."""
+        payload = self.body(self.client.get("/api/endpoints"))
+        self.assertTrue(payload["success"])
+        self.assertTrue(any("/api/calculate" in item for item in payload["endpoints"]))
+
+    def test_api_routes_are_not_shadowed(self):
+        """The catch-all static route must not swallow the API.
+
+        Only routing is asserted here: an unknown API path reached with GET must
+        produce the JSON 404 rather than an HTML error page or a file lookup.
+        """
+        payload = self.body(self.client.get("/api/does-not-exist"))
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["code"], "NOT_FOUND")
+
+    def test_unknown_api_path_reports_a_method_problem_for_write_methods(self):
+        """A write method on an unknown API path reports 405, not 404.
+
+        Werkzeug answers every URL with an automatic OPTIONS rule, so a POST to a
+        path no endpoint claims is a method problem before it is a missing path.
+        The distinction is worth pinning: it keeps POST/DELETE failures telling
+        the caller that this API accepts reads there, instead of implying the
+        endpoint exists under another name.
+        """
+        response = self.client.post("/api/does-not-exist")
+        self.assertEqual(response.status_code, 405)
+
+    def test_wrong_method_on_a_real_endpoint_reports_405(self):
+        """A real endpoint reached with the wrong method must say so, not 404."""
+        for path in ("/api/calculate", "/api/calculate/preview"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 405)
+                self.assertEqual(self.body(response)["code"], "METHOD_NOT_ALLOWED")
+
+    def body(self, response):
+        return json.loads(response.data.decode("utf-8"))
 
 
 if __name__ == "__main__":

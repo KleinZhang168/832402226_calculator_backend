@@ -15,13 +15,16 @@ Layered architecture (front-end -> HTTP/JSON -> controller -> service -> model
 
 URL layout::
 
-    /                 endpoint list (JSON, handy to confirm the service is up)
+    /                 the calculator page when src/web is bundled; the endpoint
+                      list otherwise, so a back-end-only deployment still answers
+    /api/endpoints    the endpoint list, always
     /api/...          the calculation and history endpoints
-    /index.html       optional static front-end when src/web/ is present
+    /index.html       the static front-end entry page, when src/web/ is present
 """
 
 import datetime
 from pathlib import Path
+from typing import Optional
 
 from flask import Flask, jsonify, request, send_from_directory, url_for
 from werkzeug.exceptions import MethodNotAllowed, NotFound
@@ -34,6 +37,10 @@ from src.model import database, history_model
 
 #: Prefix shared by every business endpoint.
 API_PREFIX = "/api"
+
+#: Path of the endpoint list. The root path serves the calculator itself when a
+#: static front-end is bundled, so the list lives here instead.
+ENDPOINTS_PATH = API_PREFIX + "/endpoints"
 
 
 def create_app(config_object=Config) -> Flask:
@@ -59,8 +66,10 @@ def create_app(config_object=Config) -> Flask:
     for blueprint in ALL_BLUEPRINTS:
         app.register_blueprint(blueprint)
 
-    _register_index_route(app)
-    _register_frontend_routes(app)
+    # The static hosting decides what the root path serves, so it is wired up
+    # first; _register_index_route uses the entry page it reports back.
+    entry_name = _register_frontend_routes(app)
+    _register_index_route(app, entry_name)
 
     # Create the schema on first start; existing data is never touched.
     database.init_database(app.config["DATABASE_PATH"])
@@ -77,26 +86,53 @@ def _disable_ascii_escape(app: Flask) -> None:
         app.config["JSON_AS_ASCII"] = False
 
 
-def _register_index_route(app: Flask) -> None:
-    """Root route: return the endpoint list so the API can be checked in a browser."""
+def endpoint_list() -> dict:
+    """The self-describing payload that names every API endpoint.
+
+    Served at ``/api/endpoints``, and also at ``/`` when no static front-end is
+    bundled: a back-end-only deployment should still answer something useful in a
+    browser instead of a bare 404.
+    """
+    return {
+        "success": True,
+        "service": "832402226 calculator backend",
+        "version": "1.0.0",
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "endpoints": [
+            "GET    /                     the calculator page (or this list, when no page is bundled)",
+            "GET    " + ENDPOINTS_PATH + "       this list",
+            "GET    /api/health",
+            "POST   /api/calculate           {\"expression\": \"(1+2)*3\"}",
+            "POST   /api/calculate/preview   {\"expression\": \"(1+2)*3\"} (evaluate only)",
+            "GET    /api/history?page=1&pageSize=20",
+            "GET    /api/history/count",
+            "DELETE /api/history/{id}",
+            "DELETE /api/history",
+        ],
+    }
+
+
+def _register_index_route(app: Flask, entry_name: Optional[str] = None) -> None:
+    """Register the root route and the endpoint list.
+
+    The root path serves the calculator itself whenever a static front-end is
+    bundled, because ``https://<host>/`` is the URL people are given: showing them
+    a JSON endpoint list there made a working deployment look broken. The
+    endpoint list stays available at ``/api/endpoints`` for anyone who wants it,
+    and the root falls back to it in a back-end-only deployment.
+    """
+
+    @app.get("/api/endpoints")
+    def endpoint_list_route():
+        """Always the endpoint list, whatever the root path does."""
+        return jsonify(endpoint_list())
 
     @app.get("/")
     def index():
-        return jsonify({
-            "success": True,
-            "service": "832402226 calculator backend",
-            "version": "1.0.0",
-            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "endpoints": [
-                "GET    /api/health",
-                "POST   /api/calculate           {\"expression\": \"(1+2)*3\"}",
-                "POST   /api/calculate/preview   {\"expression\": \"(1+2)*3\"} (evaluate only)",
-                "GET    /api/history?page=1&pageSize=20",
-                "GET    /api/history/count",
-                "DELETE /api/history/{id}",
-                "DELETE /api/history",
-            ],
-        })
+        """The calculator when it is bundled, otherwise the endpoint list."""
+        if entry_name:
+            return send_from_directory(app.config["FRONTEND_DIR"], entry_name)
+        return jsonify(endpoint_list())
 
     # Convenient during development: how many records are stored right now.
     @app.get("/api/history/count")
@@ -104,25 +140,69 @@ def _register_index_route(app: Flask) -> None:
         return jsonify({"success": True, "total": history_model.count_all()})
 
 
-def _resolve_api_error(app: Flask):
-    """Build the right error for an API path that the static route caught.
+def _api_method_adapter(app: Flask):
+    """A URL adapter that resolves API endpoints only.
 
-    The URL map is inspected rule by rule instead of relying on ``URLAdapter.match``:
-    ``/api/calculate`` and ``/<path:filename>`` have the same weight, so Werkzeug
-    can pick either one and the API rule is not guaranteed to win.
+    ``MapAdapter.match`` is the supported way to ask "which methods does this path
+    allow?". The application's own map cannot answer that, because the static
+    catch-all ``/<path:filename>`` covers every path and would answer for it. A
+    copy of the map without the catch-all exposes exactly the declared API
+    endpoints, so a method mismatch surfaces as ``MethodNotAllowed`` instead of
+    being absorbed by the static route.
 
-    The path is looked up in the rules that do not carry arguments. When such a
-    rule exists but does not allow this method, a 405 is raised so a wrong method
-    keeps reporting "method not allowed"; otherwise a JSON 404 names the path.
+    Each rule is copied with ``Rule.empty()``: a rule instance belongs to a single
+    ``Map``, and binding one that is already bound raises
+    ``RuntimeError: url rule ... already bound to map``. The adapter is cached in
+    the application config so the copy is built once, not on every request.
+
+    ``Rule.match`` and ``Rule._compiled_pattern`` are not used: neither exists in
+    Werkzeug 3.x, and reaching for a private attribute would break silently.
     """
-    for rule in app.url_map.iter_rules():
-        if rule.arguments or rule.rule != request.path:
-            continue
-        if request.method in rule.methods:
-            # The API rule should have won; fall through to a plain 404.
-            break
-        return MethodNotAllowed()
-    return NotFound("No such endpoint: %s %s" % (request.method, request.path))
+    from werkzeug.routing import Map
+
+    cache_key = "_calculator_api_adapter"
+    adapter = app.config.get(cache_key)
+    if adapter is None:
+        api_map = Map([rule.empty() for rule in app.url_map.iter_rules()
+                       if rule.rule.startswith(API_PREFIX)])
+        adapter = api_map.bind("localhost")
+        app.config[cache_key] = adapter
+    return adapter
+
+
+def _resolve_api_error(app: Flask):
+    """Return the error for an API path the static route caught, or ``None``.
+
+    ``/<path:filename>`` swallows the request whenever its weight ties with an API
+    rule. Measured with the catch-all registered::
+
+        GET  /api/calculate  -> frontend_asset(filename="api/calculate")
+        POST /api/calculate  -> calculate.calculate
+
+    Asking the API-only adapter which methods the path allows settles it: a method
+    the endpoints do not declare raises 405 with that list, which keeps a wrong
+    method distinguishable from a path that does not exist. ``None`` means no API
+    endpoint claims the path, and the caller lets the missing asset produce the
+    usual JSON 404.
+    """
+    from werkzeug.exceptions import MethodNotAllowed as WerkzeugMethodNotAllowed
+
+    try:
+        _api_method_adapter(app).match(request.path)
+    except WerkzeugMethodNotAllowed as error:
+        # valid_methods holds the methods the rule allows; the one that was tried
+        # is part of the set the rule responds to, so both are reported.
+        allowed = set(error.valid_methods or ())
+        allowed.add(request.method)
+        return MethodNotAllowed(
+            valid_methods=sorted(m for m in allowed if m not in ("HEAD", "OPTIONS"))
+        )
+    except NotFound:
+        return None
+
+    # An endpoint accepts this exact request, so the static route wrongly won.
+    # Falling through to the missing asset still yields the JSON 404 for the path.
+    return None
 
 
 def _register_frontend_routes(app: Flask) -> None:
@@ -132,12 +212,15 @@ def _register_frontend_routes(app: Flask) -> None:
     hosting mode keeps a browser from issuing cross origin requests, which is
     useful on a host that exposes a single port. When no front-end copy exists
     (for example when running the unit tests), the routes are skipped silently.
+
+    :return: the entry file name that will be served, or ``None`` when static
+        hosting is off. The caller uses it to decide what the root path returns.
     """
     frontend_dir = app.config.get("FRONTEND_DIR")
 
     if frontend_dir is None:
         app.logger.info("No static front-end configured, skipping static hosting")
-        return
+        return None
 
     # Accept either conventional entry file name.
     entry_name = None
@@ -158,7 +241,7 @@ def _register_frontend_routes(app: Flask) -> None:
             "handler; check CALC_FRONTEND_DIR and the vendored src/web copy.",
             frontend_dir, Path.cwd(), Path(app.root_path).resolve().parent,
         )
-        return
+        return None
 
     app.logger.info("Static front-end hosting enabled: %s (entry %s)",
                     frontend_dir, entry_name)
@@ -182,15 +265,24 @@ def _register_frontend_routes(app: Flask) -> None:
         * a path under the API prefix never refers to a static file, so it is
           resolved through the URL map again. A method mismatch then still
           produces the correct 405 instead of a misleading 404, and an unknown
-          endpoint produces the usual JSON 404. Note that the ``path`` converter
-          strips the leading slash, so the value is "api/calculate", not
-          "/api/calculate";
+          endpoint produces the usual JSON 404;
         * a non-existent file naturally falls through to the JSON 404 handler
           rather than an HTML error page, and ``send_from_directory`` rejects
           path traversal such as ``../``.
+
+        The API prefix is compared without its leading slash: the ``path``
+        converter strips it, so the value here is "api/calculate" and never
+        "/api/calculate". Comparing against ``API_PREFIX`` itself therefore never
+        matched, which silently turned this guard into dead code and let every
+        such request be treated as a missing static file.
         """
         normalized = filename.lstrip("/")
-        if normalized == API_PREFIX or normalized.startswith(API_PREFIX + "/"):
-            raise _resolve_api_error(app)
+        api_prefix_bare = API_PREFIX.lstrip("/")
+        if normalized == api_prefix_bare or normalized.startswith(api_prefix_bare + "/"):
+            api_error = _resolve_api_error(app)
+            if api_error is not None:
+                raise api_error
 
         return send_from_directory(frontend_dir, filename)
+
+    return entry_name
