@@ -22,7 +22,9 @@ URL layout::
 
 import datetime
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, url_for
+from werkzeug.exceptions import MethodNotAllowed, NotFound
+from werkzeug.routing import RequestRedirect
 
 from src.config import Config
 from src.controller import ALL_BLUEPRINTS
@@ -101,6 +103,27 @@ def _register_index_route(app: Flask) -> None:
         return jsonify({"success": True, "total": history_model.count_all()})
 
 
+def _resolve_api_error(app: Flask):
+    """Build the right error for an API path that the static route caught.
+
+    The URL map is inspected rule by rule instead of relying on ``URLAdapter.match``:
+    ``/api/calculate`` and ``/<path:filename>`` have the same weight, so Werkzeug
+    can pick either one and the API rule is not guaranteed to win.
+
+    The path is looked up in the rules that do not carry arguments. When such a
+    rule exists but does not allow this method, a 405 is raised so a wrong method
+    keeps reporting "method not allowed"; otherwise a JSON 404 names the path.
+    """
+    for rule in app.url_map.iter_rules():
+        if rule.arguments or rule.rule != request.path:
+            continue
+        if request.method in rule.methods:
+            # The API rule should have won; fall through to a plain 404.
+            break
+        return MethodNotAllowed()
+    return NotFound("No such endpoint: %s %s" % (request.method, request.path))
+
+
 def _register_frontend_routes(app: Flask) -> None:
     """Serve a static front-end copy from the same origin, when one is present.
 
@@ -144,8 +167,20 @@ def _register_frontend_routes(app: Flask) -> None:
     def frontend_asset(filename: str):
         """Static assets: css, js, images.
 
-        ``send_from_directory`` rejects path traversal such as ``../``, and
-        unmatched paths fall through to the JSON 404 handler instead of an HTML
-        error page.
+        Two guards keep this catch-all route from shadowing the API:
+
+        * a path under the API prefix never refers to a static file, so it is
+          resolved through the URL map again. A method mismatch then still
+          produces the correct 405 instead of a misleading 404, and an unknown
+          endpoint produces the usual JSON 404. Note that the ``path`` converter
+          strips the leading slash, so the value is "api/calculate", not
+          "/api/calculate";
+        * a non-existent file naturally falls through to the JSON 404 handler
+          rather than an HTML error page, and ``send_from_directory`` rejects
+          path traversal such as ``../``.
         """
+        normalized = filename.lstrip("/")
+        if normalized == API_PREFIX or normalized.startswith(API_PREFIX + "/"):
+            raise _resolve_api_error(app)
+
         return send_from_directory(frontend_dir, filename)

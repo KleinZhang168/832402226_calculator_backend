@@ -18,7 +18,9 @@ provides a single web service. The front-end is a zero-build static site, so the
 cheapest arrangement is:
 
 ```
-https://<service-name>.onrender.com/index.html   the H5 client (served by Flask)
+https://<service-name>.onrender.com/            the JSON endpoint list (a smoke test)
+https://<service-name>.onrender.com/index.html  forwards to the H5 client
+https://<service-name>.onrender.com/calculator.html  the H5 client itself, served by Flask
 https://<service-name>.onrender.com/api/...      the JSON API
 ```
 
@@ -33,12 +35,13 @@ step.
 ## 2. Before deploying: vendor the front-end
 
 ```powershell
-# From this repository's root (Windows PowerShell)
-powershell -NoProfile -File deploy\sync-frontend.ps1
+# From this repository's root. PowerShell 7 (pwsh) is recommended.
+pwsh -File deploy\sync-frontend.ps1
 ```
 
-The script copies `832402226_calculator_frontend\src` into `src\web` and prints
-how many files were copied. Commit the result:
+The script copies `832402226_calculator_frontend\src` into `src\web` and then
+generates `src\web\index.html`. It prints how many files it wrote. Commit the
+result:
 
 ```powershell
 git add -A
@@ -49,6 +52,25 @@ git push
 > Every later change to the front-end must be followed by another run of this
 > script and another push, otherwise the deployed page stays on the old version.
 
+### Why an index.html is generated
+
+The client's own entry point is `calculator.html`. The application serves the
+page at `/index.html` (and at the short alias `/app`) and enables its static
+routes whenever the front-end directory holds an `index.html` **or** a
+`calculator.html`. The generated `index.html` is a JavaScript-free redirect to
+`./calculator.html`, so all three URLs reach the calculator:
+
+| URL | What answers it |
+| --- | --- |
+| `https://<service>.onrender.com/index.html` | the redirect page |
+| `https://<service>.onrender.com/app` | the redirect page |
+| `https://<service>.onrender.com/calculator.html` | the calculator itself |
+
+The bare root `/` is reserved for the JSON endpoint list, which is the quickest
+way to confirm in a browser that the service is up. Never edit
+`src/web/index.html` by hand: the next sync overwrites it. Edit the template
+inside `deploy/sync-frontend.ps1` instead.
+
 ---
 
 ## 3. Deploy on Render (free plan, no credit card)
@@ -57,9 +79,11 @@ git push
    GitHub is the fastest option.
 2. Open <https://dashboard.render.com/blueprints> and choose
    **New Blueprint Instance**.
-3. Select this repository. Render reads `render.yaml` from the repository root.
+3. Select the `832402226_calculator_backend` repository. Render reads
+   `render.yaml` from the repository root.
 4. Keep or change the service name (it becomes the URL prefix) and press
-   **Apply**.
+   **Apply**. The name in `render.yaml` is `calculator-832402226`; if that
+   subdomain is already taken Render reports it and you must choose another.
 5. Wait two to five minutes for the first build. When the status is **Live**,
    the URL is `https://<service-name>.onrender.com`.
 
@@ -67,25 +91,65 @@ Configuration used by the blueprint:
 
 | Setting | Value |
 | --- | --- |
-| Build command | `cd 832402226_calculator_backend && pip install -r requirements.txt` |
-| Start command | `cd 832402226_calculator_backend && gunicorn run:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60` |
+| Root directory | `.` (the repository root; also the default) |
+| Build command | `pip install --upgrade pip && pip install -r requirements.txt` |
+| Start command | `gunicorn run:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile -` |
 | Health check | `/api/health` |
 | `PYTHON_VERSION` | `3.12.6` |
 | `CALC_DEBUG` | `false` (a public debugger would expose source code) |
 | `CALC_CORS_ORIGIN` | `*` (keeps LAN and phone testing working) |
 | `CALC_FRONTEND_DIR` | `src/web` (enables the same origin static hosting) |
 
+### The commands must not contain `cd`
+
+Render checks the repository out into the working directory, so the application
+files sit directly at its top:
+
+```
+<checkout>/run.py
+<checkout>/requirements.txt
+<checkout>/src/web/calculator.html
+```
+
+An earlier revision of `render.yaml` prefixed both commands with
+`cd 832402226_calculator_backend`, assuming a folder of that name existed
+*inside* the repository. It does not, so the build would stop with
+`cd: No such file or directory` and the service would never start. Copy the
+commands above exactly; do not add the prefix back. The prefix is only correct
+when the service is created from a repository that *contains* this project as a
+subfolder, which is not how this repository is laid out.
+
 Manual alternative: **New + → Web Service**, then copy the settings above into
-the form. The repository name in the build and start commands is the folder
-Render checks out; adjust it if the repository itself is named
-`832402226_calculator_backend` (in that case drop the `cd` prefix).
+the form.
+
 
 ### Free plan behaviour to expect
 
 | Observation | Reason |
 | --- | --- |
-| The first request after 15 idle minutes takes 30-60 seconds | The instance sleeps. Open the page once before a demonstration, and click the status chip to probe again if it shows "Backend offline" |
-| The calculation history is empty after a redeploy | The free plan has no persistent disk. Persisting the SQLite file requires a paid instance with a disk |
+| The first request after 15 idle minutes takes about a minute | The instance spins down on idle. Render shows a loading page while it spins up. Open the page once before a demonstration, and click the status chip to probe again if it says "Backend offline" |
+| The calculation history is empty after a redeploy, a restart **or a spin-down** | The free instance has an ephemeral filesystem: any local change, including the SQLite file, is lost on all three events. A persistent disk requires a paid instance, and free web services cannot attach one |
+| The service is suspended before the month ends | Each workspace gets 750 free instance hours per month and a spun-down service does not consume them. A service that stays awake around the clock consumes roughly 720-744 |
+| The page is served but the history is genuinely gone | This is a platform limit, not a bug. See below for the two ways to keep the data |
+
+Two ways to keep the history, should the assignment require it:
+
+* attach a **persistent disk** after upgrading the service to a paid plan. The
+  tidiest mount path is the folder the application already writes to:
+
+  | Runtime | Source code path | Disk mount path |
+  | --- | --- | --- |
+  | Python | `/opt/render/project/src` | `/opt/render/project/src/data` |
+
+  The database then stays at its default `data/calculator.db`, so no environment
+  variable has to change. Alternatively mount a standalone directory such as
+  `/var/data` and point `CALC_DB_PATH` at a file inside it, for example
+  `CALC_DB_PATH=/var/data/calculator.db`. Note that attaching a disk also
+  disables zero-downtime deploys and prevents scaling past one instance;
+
+* move the database off the instance entirely. A free Render Postgres also has
+  limits (one per workspace, 1 GB, no backups, and it **expires 30 days after
+  creation**), so it is not a permanent home for coursework data either.
 
 ### Other free hosts
 
@@ -102,9 +166,10 @@ Render checks out; adjust it if the repository itself is named
 
 | Check | Expected |
 | --- | --- |
-| `GET https://<service>.onrender.com/api/health` | `"success": true` with `"database": "ok"` |
+| `GET https://<service>.onrender.com/api/health` | `"success": true` with `"database": "ok"` (a cold start takes about a minute) |
 | `GET https://<service>.onrender.com/` | The endpoint list as JSON |
-| `GET https://<service>.onrender.com/index.html` | The calculator page, status chip green |
+| `GET https://<service>.onrender.com/index.html` | Forwards to the calculator, status chip green |
+| `GET https://<service>.onrender.com/app` | The same redirect |
 | Press `2`, long press `×`, press `3`, press `=` | The result `8` and "Saved to history" |
 | Open the history view | The record is listed and can be deleted |
 
@@ -223,8 +288,9 @@ A message you can copy:
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `/index.html` returns 404 in the cloud | `src/web` was not committed. Run `deploy\sync-frontend.ps1`, commit and push |
-| The page loads but shows "Backend offline" | The instance is still waking up, or `CALC_FRONTEND_DIR` does not point at `src/web` |
+| `/index.html` returns 404 in the cloud | `src/web` was not committed, or the vendored copy has no `index.html`. Run `deploy\sync-frontend.ps1`, commit and push |
+| The page loads but shows "Backend offline" | The instance is either still spinning up (a cold start takes about a minute) or `CALC_FRONTEND_DIR` does not point at `src/web`. Click the status chip to probe again |
 | The service fails to start | The start command must use `$PORT` (see `render.yaml`), not a hard-coded 5000 |
-| History is empty after every deploy | Expected on the free plan, which has no persistent disk |
+| The build log says `cd: No such file or directory` | The build or start command was given a `cd` prefix again. This repository is checked out at the working directory root, so the prefix is wrong; see section 3 |
+| History is empty after every deploy | Expected on the free plan: the filesystem is ephemeral, so the SQLite file is lost on redeploy, restart **and** spin-down |
 | A front-end change is not visible online | The vendored copy in `src/web` is stale: re-run the sync script and push |

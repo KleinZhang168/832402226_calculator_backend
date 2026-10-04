@@ -7,6 +7,21 @@
 # 832402226_calculator_frontend/src into 后端/src/web before deploying
 # (see DEPLOYMENT.md), because Render's free plan allows one service.
 #
+# IMPORTANT - why there is no "cd" in the commands below:
+#   This file lives in the back-end repository, and this repository IS the
+#   deployed service. Render checks the repository out into the working
+#   directory, so run.py, requirements.txt and src/ sit directly at the top:
+#
+#       <checkout>/run.py
+#       <checkout>/requirements.txt
+#       <checkout>/src/web/calculator.html
+#
+#   An earlier revision prefixed the commands with
+#   "cd 832402226_calculator_backend", which assumed a folder of that name
+#   existed inside the repository. It does not, so the build aborted with
+#   "No such file or directory" and the service never started. Keep the
+#   commands free of "cd" and verify with the folder listing above.
+#
 # Environment variables:
 #   CALC_FRONTEND_DIR  directory that holds the static client (relative to the repo root)
 #   CALC_CORS_ORIGIN   "*" keeps LAN and phone testing working
@@ -20,12 +35,13 @@ services:
     plan: free
     region: singapore
     branch: main
+    # Explicit and equal to the default: documents that the repository root is
+    # the application directory. "cd <repo-name>" is NOT needed here.
+    rootDir: .
     autoDeploy: true
     healthCheckPath: /api/health
-    buildCommand: |
-      cd 832402226_calculator_backend && pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: |
-      cd 832402226_calculator_backend && gunicorn run:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile -
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: gunicorn run:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile -
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.6
